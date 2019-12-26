@@ -1,8 +1,12 @@
 # converts protocols into correct format before preprocessing for RESIDE training
+import re
 import json
 import sys
 from os import listdir
 from os.path import isfile, join
+from pycorenlp import *
+import pprint
+import time
 
 # create training data in format of raw riedel dataset from RESIDE model
 # only for inter-AP relations
@@ -113,6 +117,7 @@ def parseERels(entities, erels, line, protnum):
     #2. for each relation following action, use action as arg1 and T# following relation as arg2
     for i in range(len(lsplit)-2):
         rel_type, ent = lsplit[i+2].split(':')
+        rel_type = re.sub(r'\d+', '', rel_type)
         relJSON = {"id": 'm.' + protnum + '_' + lsplit[0].lower() + '_' + str(i)}
         relJSON['relation_type'] = rel_type.lower()
         relJSON['arg1'] = action
@@ -140,19 +145,26 @@ def searchSentForToken(sentences, token_start, token_end):
     return -1
 
 ######################### create training JSONS from sentence entities/relations
-def createSentJSON(sentences, entities, erels, rrels, protnum):
-    training = {"rtests": []}
+def createSentJSON(relations, training, sentences, entities, erels, rrels, protnum, nlp_wrapper, pp):
     for rel in erels['rels']:
-        rtest = createRelSubObjJSON(erels['rels'][rel], sentences, entities, erels, rrels)
-        training['rtests'].append(rtest)
+        rtest = createRelSubObjJSON(erels['rels'][rel], sentences, entities, erels, rrels, nlp_wrapper)
+        if rtest['rel'] in relations:
+            relations[rtest['rel']] += 1
+        else:
+            relations[rtest['rel']] = 1
+        training.append(rtest)
 
     for rel in rrels:
-        rtest = createRelSubObjJSON(rrels[rel], sentences, entities, erels, rrels)
-        training['rtests'].append(rtest)
+        rtest = createRelSubObjJSON(rrels[rel], sentences, entities, erels, rrels, nlp_wrapper)
+        if rtest['rel'] in relations:
+            relations[rtest['rel']] += 1
+        else:
+            relations[rtest['rel']] = 1
+        training.append(rtest)
 
-    #print(json.dumps(training))
+    return training
 
-def createRelSubObjJSON(rel, sentences, entities, erels, rrels):
+def createRelSubObjJSON(rel, sentences, entities, erels, rrels, nlp_wrapper):
     rtest = {}
 
     # add relation
@@ -161,20 +173,14 @@ def createRelSubObjJSON(rel, sentences, entities, erels, rrels):
 
     rtest["rel"] = '/' + entities[arg1]['entity_type'] + '/' + entities[arg2]['entity_type'] + '/' + rel['relation_type']
 
-    # add openie
-    rtest["openie"] = None
-
-    # add corenlp
-    rtest["corenlp"] = None
-
     # add subject id
     rtest["sub_id"] = entities[arg1]['id']
 
     # add subject
-    rtest["sub"] = entities[arg1]['token']
+    rtest["sub"] = entities[arg1]['token'].lower()
 
     # add object
-    rtest["obj"] = entities[arg2]['token']
+    rtest["obj"] = entities[arg2]['token'].lower()
 
     # add sentence
     rtest["sent"] = sentences[rel['sent_num']]['sent']
@@ -185,21 +191,76 @@ def createRelSubObjJSON(rel, sentences, entities, erels, rrels):
     # add object id
     rtest["obj_id"] = entities[arg2]['id']
 
+    # add openie
+    rtest["openie"] = createOpenIEJSON(rtest['sent'], nlp_wrapper)
+
+    # add corenlp
+    rtest["corenlp"] = createOpenIEJSON(rtest['sent'], nlp_wrapper)
+
+
     return rtest
+
+def createOpenIEJSON(text, nlp_wrapper):
+    openie_json = nlp_wrapper.annotate(text, properties={'annotators': 'openie, depparse, tokenize', 'timeout': '50000', 'outputFormat': 'json'})
+    del openie_json['sentences'][0]['enhancedDependencies']
+    del openie_json['sentences'][0]['enhancedPlusPlusDependencies']
+    return openie_json
+
+def createCoreNLPJSON(text, nlp_wrapper):
+    corenlp_json = nlp_wrapper.annotate(text, properties={'annotators': 'parse, depparse, entitymentions, kbp, tokenize', 'timeout': '50000', 'outputFormat': 'json'})
+    del corenlp_json['sentences'][0]['enhancedDependencies']
+    del corenlp_json['sentences'][0]['enhancedPlusPlusDependencies']
+    return corenlp_json
+
+def printTrainingToFile(training, outfilename, relationfilename, entitytypefile, relations, entities):
+    outf = open(outfilename, 'w+')
+    for rtest in training:
+        outf.write(json.dumps(rtest))
+    outf.close()
+
+    relf = open(relationfilename, 'w+')
+    relf.write(json.dumps(relations))
+    relf.close()
+
+    entf = open(entitytypefile, 'w+')
+    entf.write(json.dumps(entities))
+    entf.close()
 
 ########################### MAIN ####################
 
+nlp_wrapper = StanfordCoreNLP('http://localhost:9000/')
 path = 'protocols/train/'
 train_files = [f for f in listdir(path) if isfile(join(path, f))]
+pp = pprint.PrettyPrinter(indent=4)
+training = []
+outfilepath = 'protocols/wlp_raw/wlp_data/wlp_train.json'
+relationfilepath = 'protocols/wlp_raw/wlp_relation2id.json'
+entitytypefile = 'protocols/wlp_raw/type_info.json'
+relations = {}
+entitytype = {}
 
 # open all text files in training and corresponding annotation files
+i = 0
+now = time.time()
 for file in train_files:
     if file[-4:]=='.txt':
         protnum = file[file.find('_')+1:file.find('.')]
         txtfile = open(path+file, "r", encoding="utf8")
         annfile = open(path+file[:-4]+'.ann', "r", encoding="utf8")
         sentences, entities, erels, rrels = parseProtocol(txtfile, annfile, protnum)
-        createSentJSON(sentences, entities, erels, rrels, protnum)
+        training = createSentJSON(relations, training, sentences, entities, erels, rrels, protnum, nlp_wrapper, pp)
         txtfile.close()
         annfile.close()
+        i+=1
+        if i%1==0:
+            print(time.time()-now)
+            break
 
+# reformat entitytype
+entitytype = {}
+for k,v in entities.items():
+    entitytype[entities[k]['id']] = ['/'+entities[k]['entity_type']]
+
+print(len(training))
+print(relations)
+printTrainingToFile(training, outfilepath, relationfilepath, entitytypefile, relations, entitytype)
