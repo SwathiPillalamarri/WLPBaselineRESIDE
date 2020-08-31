@@ -216,9 +216,11 @@ def printTrainingToFile(training, outfilename, relationfilename, entitytypefile,
     outf = open(outfilename, 'w+')
     for rtest in training:
         outf.write(json.dumps(rtest))
+        outf.write('\n')
     outf.close()
 
     relf = open(relationfilename, 'w+')
+    relations["NA"] = 0
     relf.write(json.dumps(relations))
     relf.close()
 
@@ -248,18 +250,17 @@ for file in train_files:
         txtfile = open(path+file, "r", encoding="utf8")
         annfile = open(path+file[:-4]+'.ann', "r", encoding="utf8")
         sentences, entities, erels, rrels = parseProtocol(txtfile, annfile, protnum)
+        # reformat entitytype
+        for k,v in entities.items():
+            entitytype[entities[k]['id']] = ['/'+entities[k]['entity_type']]
         training = createSentJSON(relations, training, sentences, entities, erels, rrels, protnum, nlp_wrapper, pp)
         txtfile.close()
         annfile.close()
         i+=1
-        if i%1==0:
+        if i%15==0:
             print(time.time()-now)
             break
 
-# reformat entitytype
-entitytype = {}
-for k,v in entities.items():
-    entitytype[entities[k]['id']] = ['/'+entities[k]['entity_type']]
 
 print(len(training))
 print(relations)

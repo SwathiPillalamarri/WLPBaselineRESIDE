@@ -202,11 +202,23 @@ def createCoreNLPJSON(text, nlp_wrapper):
     del corenlp_json['sentences'][0]['enhancedPlusPlusDependencies']
     return corenlp_json
 
-def printTrainingToFile(training, outfilename):
+def printTestingToFile(testing, outfilename, entitytypefile, entitytype):
     f = open(outfilename, 'w+')
-    for rtest in training:
+    for rtest in testing:
         f.write(json.dumps(rtest))
+        f.write('\n')
     f.close()
+
+    # open entityfile to add new entitytypes, for read
+    entf = open(entitytypefile, 'r')
+    enttype = json.load(entf)
+    enttype.update(entitytype)
+    entf.close()
+
+    # open entityfile to add new entitytypes, for write
+    entf = open(entitytypefile, 'w+')
+    entf.write(json.dumps(enttype))
+    entf.close()
 
 ########################### MAIN ####################
 
@@ -214,9 +226,10 @@ nlp_wrapper = StanfordCoreNLP('http://localhost:9000/')
 path = 'protocols/test/'
 train_files = [f for f in listdir(path) if isfile(join(path, f))]
 pp = pprint.PrettyPrinter(indent=4)
-training = []
+testing = []
 outfilepath = 'protocols/wlp_raw/wlp_data/wlp_test.json'
-
+entitytypefile = 'protocols/wlp_raw/type_info.json'
+entitytype = {}
 # open all text files in training and corresponding annotation files
 i = 0
 now = time.time()
@@ -226,7 +239,9 @@ for file in train_files:
         txtfile = open(path+file, "r", encoding="utf8")
         annfile = open(path+file[:-4]+'.ann', "r", encoding="utf8")
         sentences, entities, erels, rrels = parseProtocol(txtfile, annfile, protnum)
-        training = createSentJSON(training, sentences, entities, erels, rrels, protnum, nlp_wrapper, pp)
+        for k,v in entities.items():
+            entitytype[entities[k]['id']] = ['/'+entities[k]['entity_type']]
+        testing = createSentJSON(testing, sentences, entities, erels, rrels, protnum, nlp_wrapper, pp)
         txtfile.close()
         annfile.close()
         i+=1
@@ -234,5 +249,5 @@ for file in train_files:
             print(time.time()-now)
             break
 
-print(len(training))
-printTrainingToFile(training, outfilepath)
+print(len(testing))
+printTestingToFile(testing, outfilepath, entitytypefile, entitytype)
